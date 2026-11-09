@@ -126,6 +126,8 @@ def _hoja_resumen(wb, resumen: dict, contexto: dict):
         ("Monto provisorio CLP (J)", resumen["monto_provisorio_clp"]),
         ("Monto real CLP asignado (O)", resumen["monto_real_clp"]),
         ("Monto total Informe Real", resumen["monto_informe_total"]),
+        ("Líneas del mes ya recepcionadas (excluidas)", resumen.get("lineas_ya_recepcionadas", 0)),
+        ("Monto Informe Real de líneas ya recepcionadas", resumen.get("monto_informe_ya_recepcionado", 0.0)),
         ("Monto Informe Real sin línea asociada", resumen["monto_informe_sin_uso"]),
         ("Filas Informe Real sin línea asociada", resumen["filas_informe_sin_uso"]),
     ]

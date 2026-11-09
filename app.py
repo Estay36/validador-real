@@ -22,7 +22,7 @@ import config as cfg
 from exportador import exportar_gral, exportar_recepcion
 from generador import aplicar_ajustes, procesar
 from loaders import (
-    ErrorEstructura, hojas_informe_real, leer_aprobadores, leer_informe_real,
+    ErrorEstructura, abrir_libro, hojas_informe_real, leer_aprobadores, leer_informe_real,
     leer_monitor_prov, leer_provisorios, leer_recepcion_existente,
 )
 
@@ -41,10 +41,11 @@ def _hash(b: bytes) -> str:
 @st.cache_data(show_spinner=False)
 def cargar_archivo_cargas(_contenido: bytes, clave: str):
     """`clave` (hash del archivo) es lo único que usa la caché; el contenido se excluye."""
-    prov = leer_provisorios(io.BytesIO(_contenido))
-    monitor = leer_monitor_prov(io.BytesIO(_contenido))
-    hist = leer_recepcion_existente(io.BytesIO(_contenido))
-    aprob = leer_aprobadores(io.BytesIO(_contenido))
+    libro = abrir_libro(io.BytesIO(_contenido))   # se abre una sola vez
+    prov = leer_provisorios(libro)
+    monitor = leer_monitor_prov(libro)
+    hist = leer_recepcion_existente(libro)
+    aprob = leer_aprobadores(libro)
     return prov, monitor, hist, aprob
 
 
@@ -75,18 +76,25 @@ def identificar_archivo(_contenido: bytes, clave: str) -> str:
       - INFORME REAL : tiene una hoja 'REAL <MES> <AÑO>' o 'BASES <AÑO>'
       - GRAL         : tiene 'Data' con 'Documento compras' (es una salida)
     """
-    from openpyxl import load_workbook
-    from utils import buscar_hoja
+    import re
+    import zipfile
+    from html import unescape
+    from utils import buscar_hoja, normalizar
+    # Los nombres de las pestañas están en xl/workbook.xml: leerlos de ahí es
+    # instantáneo, en vez de abrir el libro completo (~2,5 s el de cargas).
     try:
-        wb = load_workbook(io.BytesIO(_contenido), read_only=True)
+        with zipfile.ZipFile(io.BytesIO(_contenido)) as z:
+            xml = z.read("xl/workbook.xml").decode("utf-8", "ignore")
     except Exception:
         return "ilegible"
-    hojas = wb.sheetnames
+    hojas = [unescape(n) for n in re.findall(r'<sheet\b[^>]*\bname="([^"]*)"', xml)]
     if buscar_hoja(hojas, cfg.HOJA_PROVISORIOS) and buscar_hoja(hojas, cfg.HOJA_MONITOR_PROV):
         return "cargas"
-    if hojas_informe_real(io.BytesIO(_contenido)):
+    if any(normalizar(h).startswith(("REAL ", cfg.HOJA_BASES_REAL)) and "ACUM" not in normalizar(h) for h in hojas):
         return "informe"
-    if buscar_hoja(hojas, "Data"):
+    if buscar_hoja(hojas, "Data") and len(hojas) <= 10 and not buscar_hoja(hojas, "DETALLE ESTIMADO"):
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(_contenido), read_only=True)
         fila = next(wb[buscar_hoja(hojas, "Data")].iter_rows(max_row=1, values_only=True), ())
         if any(str(v).strip() == "Documento compras" for v in fila if v):
             return "gral"
@@ -235,18 +243,26 @@ c3.metric("A revisar", r["revisar"])
 c4.metric("Sin cruce", r["sin_cruce"])
 c5.metric("Moneda extranjera", r["moneda_extranjera"])
 
-c1, c2, c3 = st.columns(3)
-c1.metric("Provisorio CLP (J)", formato_pesos(r["monto_provisorio_clp"]))
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Provisorio CLP (J)", formato_pesos(r["monto_provisorio_clp"]),
+          help="Suma del valor provisorio de las líneas generadas (pendientes)")
 c2.metric("Real CLP asignado (O)", formato_pesos(r["monto_real_clp"]),
-          delta=formato_pesos(r["monto_real_clp"] - r["monto_provisorio_clp"]), delta_color="off")
-c3.metric("Informe Real sin línea asociada", formato_pesos(r["monto_informe_sin_uso"]),
-          help=f"{r['filas_informe_sin_uso']} filas del Informe Real no se asociaron a ninguna línea")
+          delta=formato_pesos(r["monto_real_clp"] - r["monto_provisorio_clp"]), delta_color="off",
+          help="Suma del monto real asignado a las líneas generadas")
+c3.metric("Informe: líneas ya recepcionadas", formato_pesos(r["monto_informe_ya_recepcionado"]),
+          help=f"{r['filas_informe_ya_recepcionadas']} filas del Informe Real corresponden a líneas que ya tienen Documento material")
+c4.metric("Informe: sin línea asociada", formato_pesos(r["monto_informe_sin_uso"]),
+          help=f"{r['filas_informe_sin_uso']} filas del Informe Real no corresponden a ninguna línea provisoria")
 
-n_terminadas = int((res.excluidas.get("motivo_exclusion", pd.Series(dtype=str)) == "Ya recepcionada (tiene Documento material)").sum())
+n_terminadas = r["lineas_ya_recepcionadas"]
 if n_terminadas and excluir_ok:
+    total_vig = n_terminadas + r["lineas_generadas"]
+    pend = r["lineas_generadas"]
+    txt_pend = "Queda **1 línea pendiente**, que es la que aparece" if pend == 1 else f"Quedan **{pend} líneas pendientes**, que son las que aparecen"
     st.info(
-        f"{n_terminadas} líneas de {mes_txt} ya tienen Documento material en la Recepción "
-        "PROVISORIOS histórica y no se vuelven a generar. Para regenerar el mes completo, "
+        f"**{mes_txt}: {n_terminadas} de {total_vig} líneas ya están recepcionadas en SAP** "
+        "(tienen Documento material en la pestaña Recepción PROVISORIOS), por lo que no se "
+        f"vuelven a generar. {txt_pend} en las descargas. Para ver el mes completo como prueba, "
         "desmarque 'Excluir líneas ya recepcionadas'."
     )
 
@@ -337,8 +353,9 @@ with t_excl:
 
 with t_inf:
     st.markdown(
-        "Filas del Informe Real del mes que no quedaron asociadas a ninguna línea "
-        "provisoria (p. ej. Meta/Google directo, líneas aún no cargadas o ya recepcionadas)."
+        "Filas del Informe Real del mes que no corresponden a ninguna línea provisoria, "
+        "ni pendiente ni ya recepcionada (p. ej. Meta/Google directo en CLP, filas "
+        "bonificadas en $0 o montos que todavía no tienen provisorio cargado)."
     )
     st.dataframe(
         res.informe_sin_uso[["fila_informe", "pinta", "medio", "vehiculo", "burst",

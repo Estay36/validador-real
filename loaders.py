@@ -29,8 +29,15 @@ class ErrorEstructura(Exception):
     """La planilla no tiene la estructura esperada."""
 
 
+def abrir_libro(archivo) -> pd.ExcelFile:
+    """Abre el libro una sola vez; si ya viene abierto, lo reutiliza.
+    Abrir el archivo de cargas (~4,5 MB) cuesta ~2,5 s, mucho más que leer
+    cada pestaña, por lo que conviene abrirlo una vez y pasarlo a cada lector."""
+    return archivo if isinstance(archivo, pd.ExcelFile) else pd.ExcelFile(archivo)
+
+
 def _leer_hoja(archivo, objetivo: str, **kwargs) -> pd.DataFrame:
-    xls = pd.ExcelFile(archivo)
+    xls = abrir_libro(archivo)
     hoja = buscar_hoja(xls.sheet_names, objetivo)
     if hoja is None:
         raise ErrorEstructura(
@@ -223,7 +230,7 @@ def _mes_desde_nombre(texto: str) -> tuple[int | None, int | None]:
 
 def hojas_informe_real(archivo) -> list[str]:
     """Hojas candidatas: 'REAL <MES> <AÑO>' (con datos) y 'BASES <AÑO>'."""
-    xls = pd.ExcelFile(archivo)
+    xls = abrir_libro(archivo)
     candidatas = []
     for h in xls.sheet_names:
         n = normalizar(h)
@@ -234,9 +241,9 @@ def hojas_informe_real(archivo) -> list[str]:
 
 
 def leer_informe_real(archivo, hoja: str | None = None, mes: int | None = None) -> InformeReal:
-    xls = pd.ExcelFile(archivo)
+    xls = abrir_libro(archivo)
     if hoja is None:
-        cands = hojas_informe_real(archivo)
+        cands = hojas_informe_real(xls)
         if not cands:
             raise ErrorEstructura("El Informe Real no tiene hojas 'REAL <MES>' ni 'BASES'.")
         hoja = cands[0]

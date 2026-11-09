@@ -231,23 +231,45 @@ def _observaciones(L: pd.DataFrame) -> pd.Series:
 def procesar(prov, monitor, recepcion_hist, aprobadores, informe, meses,
              excluir_recepcionadas=True, moneda_extranjera_100=True,
              tolerancia_redondeo=cfg.TOLERANCIA_REDONDEO) -> Resultado:
-    lineas, excluidas = seleccionar_lineas(prov, meses, recepcion_hist, excluir_recepcionadas)
-    lineas = enlazar_monitor(lineas, monitor, recepcion_hist)
+    """
+    El cruce con el Informe Real se hace con TODAS las líneas vigentes del mes,
+    incluidas las ya recepcionadas, y recién después se separan las pendientes.
+    Así:
+      - una línea pendiente no puede quedarse con una fila del informe que
+        corresponde a una línea ya recepcionada, y
+      - "Informe sin uso" muestra solo las filas que de verdad no tienen línea.
+    """
+    vigentes, excluidas_base = seleccionar_lineas(prov, meses, recepcion_hist, excluir_recepcionadas=False)
+    vigentes = enlazar_monitor(vigentes, monitor, recepcion_hist)
 
     if recepcion_hist is not None and not recepcion_hist.empty:
         soc = recepcion_hist.set_index(["solped", "pos"])["sociedad_hist"].to_dict()
-        lineas["sociedad_hist"] = [soc.get(k, "") for k in zip(lineas["solped"], lineas["pos"])]
+        vigentes["sociedad_hist"] = [soc.get(k, "") for k in zip(vigentes["solped"], vigentes["pos"])]
     else:
-        lineas["sociedad_hist"] = ""
+        vigentes["sociedad_hist"] = ""
 
-    L, I, homol = cruzar_informe_real(
-        lineas, informe, aprobadores,
+    L_todas, I, homol = cruzar_informe_real(
+        vigentes, informe, aprobadores,
         recepcionar_moneda_extranjera_100=moneda_extranjera_100,
         tolerancia_redondeo=tolerancia_redondeo,
     )
+    L_todas["responsable"] = asignar_responsable(L_todas, aprobadores)
 
-    # Responsable de recepción (bloque de la pestaña Aprobadores)
-    L["responsable"] = asignar_responsable(L, aprobadores)
+    ya = L_todas["documento_material_hist"].notna()
+    claves_ya = {f"{a}/{b}" for a, b in zip(L_todas.loc[ya, "solped"], L_todas.loc[ya, "pos"])}
+    I["destino"] = np.where(
+        I["linea_asignada"].isin(claves_ya), "Línea ya recepcionada",
+        np.where(I["usada"], "Línea pendiente (en la salida)", I["motivo_no_uso"]),
+    )
+
+    if excluir_recepcionadas:
+        L = L_todas[~ya].copy()
+        recep = L_todas[ya].copy()
+        recep["motivo_exclusion"] = "Ya recepcionada (tiene Documento material)"
+        excluidas = pd.concat([excluidas_base, recep], ignore_index=True, sort=False)
+    else:
+        L = L_todas.copy()
+        excluidas = excluidas_base
 
     return _armar_resultado(L, excluidas, I, homol, informe)
 
@@ -265,6 +287,7 @@ def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
     gral = armar_gral(L)
     por_resp = separar_por_responsable(gral)
     sin_uso = I[~I["usada"]].copy()
+    ya_recep_inf = I[I.get("destino", pd.Series("", index=I.index)) == "Línea ya recepcionada"]
 
     con_real = L["monto_real"].notna()
     resumen = {
@@ -281,6 +304,10 @@ def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
         "monto_informe_total": float(informe["monto_real"].sum()),
         "monto_informe_sin_uso": float(sin_uso["monto_real"].sum()),
         "filas_informe_sin_uso": int(len(sin_uso)),
+        "filas_informe_ya_recepcionadas": int(len(ya_recep_inf)),
+        "monto_informe_ya_recepcionado": float(ya_recep_inf["monto_real"].sum()),
+        "lineas_ya_recepcionadas": int((excluidas.get("motivo_exclusion", pd.Series(dtype=str))
+                                        == "Ya recepcionada (tiene Documento material)").sum()),
     }
     res = Resultado(
         recepcion=recepcion, gral=gral, gral_por_responsable=por_resp, lineas=L,
