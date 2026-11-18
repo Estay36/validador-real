@@ -246,7 +246,7 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
 
     for c in ["monto_real", "monto_informe", "puntaje_cruce", "fila_informe"]:
         L[c] = np.nan
-    for c in ["estado_cruce", "paso_cruce", "inf_pinta", "inf_id_medio", "inf_medio",
+    for c in ["estado_cruce", "nota_cruce", "paso_cruce", "inf_pinta", "inf_id_medio", "inf_medio",
               "inf_vehiculo", "inf_burst", "inf_tipo"]:
         L[c] = ""
 
@@ -263,22 +263,26 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
     extranjera = L["moneda"].ne(cfg.MONEDA_INFORME)
     if recepcionar_moneda_extranjera_100:
         L.loc[extranjera, "monto_real"] = L.loc[extranjera, "valor_prov"]
-        L.loc[extranjera, "estado_cruce"] = "Moneda extranjera: 100 %"
+        L.loc[extranjera, "estado_cruce"] = "Moneda extranjera (100 %)"
     else:
-        L.loc[extranjera, "estado_cruce"] = "Moneda extranjera: sin cruce"
+        L.loc[extranjera, "estado_cruce"] = "Sin cruce"
     candidatas = list(L.index[~extranjera])
 
-    def _asignar(idx_l, idx_i, puntaje, etiqueta, paso):
+    def _asignar(idx_l, idx_i, puntaje, nota, paso):
+        """Toda línea emparejada queda en estado "Cruzado"; los matices
+        (cruce menos claro, diferencia de redondeo) van como nota."""
         fila = I.loc[idx_i]
         real = fila["monto_real"]
+        notas = [nota] if nota else []
         L.at[idx_l, "monto_informe"] = real
         if abs(real - L.at[idx_l, "valor_prov"]) <= tolerancia_redondeo:
             # Diferencia de redondeo: se respeta el provisorio (100 %)
             L.at[idx_l, "monto_real"] = L.at[idx_l, "valor_prov"]
             if abs(real - L.at[idx_l, "valor_prov"]) > cfg.TOLERANCIA_PESOS:
-                etiqueta += " (dif. redondeo)"
+                notas.append(f"Diferencia de redondeo ({abs(real - L.at[idx_l, 'valor_prov']):.0f} pesos): se mantuvo el provisorio")
         else:
             L.at[idx_l, "monto_real"] = real
+        L.at[idx_l, "nota_cruce"] = "; ".join(notas)
         L.at[idx_l, "puntaje_cruce"] = round(puntaje, 1)
         L.at[idx_l, "fila_informe"] = fila["fila_informe"]
         L.at[idx_l, "inf_pinta"] = fila["pinta"]
@@ -287,7 +291,7 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
         L.at[idx_l, "inf_vehiculo"] = fila["vehiculo"]
         L.at[idx_l, "inf_burst"] = fila["burst"]
         L.at[idx_l, "inf_tipo"] = fila["tipo"]
-        L.at[idx_l, "estado_cruce"] = etiqueta
+        L.at[idx_l, "estado_cruce"] = "Cruzado"
         L.at[idx_l, "paso_cruce"] = f"Paso {paso}"
         I.at[idx_i, "usada"] = True
         I.at[idx_i, "linea_asignada"] = f"{L.at[idx_l, 'solped']}/{L.at[idx_l, 'pos']}"
@@ -327,10 +331,12 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
         for a, b in zip(fi, co):
             sc = S[a, b]
             if sc >= cfg.PUNTAJE_MINIMO:
-                etiqueta = "Cruzado" if (sc >= cfg.PUNTAJE_REVISAR and paso == 1) else "Cruzado - revisar"
-                _asignar(idx_lineas[a], idx_informe[b], sc, etiqueta, paso)
+                claro = sc >= cfg.PUNTAJE_REVISAR and paso == 1
+                nota = "" if claro else "Cruce menos evidente: conviene validar la fila del informe"
+                _asignar(idx_lineas[a], idx_informe[b], sc, nota, paso)
             elif aceptar_monto_exacto and SM[a, b] >= 100:
-                _asignar(idx_lineas[a], idx_informe[b], sc, "Cruzado - revisar", paso)
+                _asignar(idx_lineas[a], idx_informe[b], sc,
+                         "Cruzado por monto exacto en otro medio de la marca", paso)
 
     grupos_inf = I.groupby(["codigo_marca", "medio_grupo"]).groups
     grupos_marca = I.groupby("codigo_marca").groups

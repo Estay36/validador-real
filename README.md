@@ -21,8 +21,12 @@ Las columnas que SAP completa al subir la recepción (Hoja de entrada, Documento
 
 1. Subir los dos archivos en la barra lateral, en cualquier orden. La app reconoce cada uno por sus pestañas (no por el nombre) e informa si se subió un archivo que no corresponde, como el GRAL RECEPCIÓN, que es una salida, o una planilla de la revisión provisoria.
 2. Elegir la hoja del Informe Real (si se usa `BASES`, elegir el mes).
-3. Revisar la pestaña **Revisión**: líneas sin cruce, con cruce a revisar o con observaciones. El importe real puede corregirse en la tabla y se aplica a ambas salidas.
-4. Descargar los dos Excel.
+3. Revisar la pestaña **Sin cruce**: líneas que no encontraron su fila en el Informe Real. El importe real se ingresa en la tabla y se aplica a ambas salidas.
+4. Descargar los dos Excel:
+   - **Recepción PROVISORIOS** (3 hojas): *Recepción PROVISORIOS* (columnas A:AC para pegar en el archivo de cargas, más la fila del Informe Real de donde salió cada monto), *Resumen* (cifras del mes y líneas sin cruce) y *Control* (líneas no incluidas y gasto real sin provisorio).
+   - **GRAL Recepción**: hoja *Data* y una pestaña por responsable, como el GRAL actual.
+
+Montos: pesos sin decimales y USD con dos decimales.
 
 ## Despliegue en Streamlit Community Cloud
 

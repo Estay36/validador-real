@@ -178,6 +178,9 @@ ALIAS_MARCA_A_CODIGO = {
     "LEMON STONES": "CSTON",
     "TRADE MKT": "CMORE",
     "VINA MAR": "EVIÑA",
+    # En el Informe Real la Pinta es "CAMPANARIO COCTEL", pero los provisorios
+    # se cargan al PEP de Campanario Sour (KCAMP). Verificado con junio y julio.
+    "CAMPANARIO COCTEL": "KCAMP",
 }
 
 # Códigos de marca equivalentes (el PEP del año anterior sigue vigente en

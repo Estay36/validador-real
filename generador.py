@@ -79,14 +79,25 @@ def _fecha_pedido(row) -> tuple:
     return row["fecha_solicitud"], "Fecha de solicitud (proxy)"
 
 
+def _monto(x, moneda):
+    """Pesos sin decimales; otras monedas (USD) con 2 decimales. None si no hay monto."""
+    if x is None or pd.isna(x):
+        return None
+    return int(round(float(x))) if moneda == "CLP" else round(float(x), 2)
+
+
+def _cumplimiento(real, prov):
+    return round(real / prov * 100, 2) if real is not None and prov else None
+
+
 def armar_recepcion(L: pd.DataFrame) -> pd.DataFrame:
     filas = []
     for _, r in L.iterrows():
-        fecha, origen_fecha = _fecha_pedido(r)
-        real = r["monto_real"]
-        prov = r["valor_prov"]
-        q = round(real / prov * 100, 2) if pd.notna(real) and prov else np.nan
-        desv = round(real - prov, 2) if pd.notna(real) and pd.notna(prov) else np.nan
+        fecha, _ = _fecha_pedido(r)
+        mon = r["moneda"]
+        prov = _monto(r["valor_prov"], mon)
+        real = _monto(r["monto_real"], mon)
+        desv = _monto(real - prov, mon) if real is not None and prov is not None else None
         sociedad = sociedad_desde_pep(r["pep"]) or r.get("sociedad_hist", "")
         servicio = r["servicio"] if pd.notna(r.get("servicio")) else cfg.SERVICIO_DEFAULT
         filas.append({
@@ -100,13 +111,13 @@ def armar_recepcion(L: pd.DataFrame) -> pd.DataFrame:
             "Pedido": r["pedido"],
             "Hoja de entrada": None,
             "Valor total": prov,
-            "Moneda": r["moneda"],
+            "Moneda": mon,
             "Documento material": None,
             "Cuenta de mayor": cfg.CUENTA_MAYOR_DEFAULT,
             "Servicio": int(servicio),
-            "Importe Contab. HES": real if pd.notna(real) else None,
-            "Moneda HES": r["moneda"],
-            "Porcentaje de Cumplimiento": q,
+            "Importe Contab. HES": real,
+            "Moneda HES": mon,
+            "Porcentaje de Cumplimiento": _cumplimiento(real, prov),
             "Desviacion por Posicion": desv,
             "Elemento PEP": r["pep"] or None,
             "Factura": None, "Fecha Factura": None, "Fecha Contab. Factura": None,
@@ -115,22 +126,15 @@ def armar_recepcion(L: pd.DataFrame) -> pd.DataFrame:
             "Status tratamiento": cfg.STATUS_TRATAMIENTO_DEFAULT,
             "": None,
             "SOX": r["sox"] or None,
-            # --- Trazabilidad (a la derecha de la plantilla) ---
+            # --- Trazabilidad con el Informe Real (a la derecha de la plantilla) ---
             "_Estado cruce": r["estado_cruce"],
             "_Observación": r["observacion"],
-            "_Puntaje cruce": r["puntaje_cruce"],
-            "_Fila Informe Real": r["fila_informe"],
-            "_Pinta": r["inf_pinta"],
-            "_ID Medio": r["inf_id_medio"],
-            "_Medio": r["inf_medio"],
-            "_Proveedor-Vehiculo": r["inf_vehiculo"],
-            "_Burst": r["inf_burst"],
-            "_Tipo": r["inf_tipo"],
-            "_Monto Neto Real": r["monto_informe"],
-            "_Texto carga (Monitor)": r["texto_largo"],
-            "_Origen PEP": r["origen_pep"],
-            "_Origen Fecha de pedido": origen_fecha,
-            "_Responsable": r["responsable"],
+            "_Pinta": r["pinta_salida"],
+            "_ID Medio": r["id_medio_salida"],
+            "_Medio": r["medio_salida"],
+            "_Proveedor-Vehiculo": r["inf_vehiculo"] or None,
+            "_Burst": r["inf_burst"] or None,
+            "_Monto Neto Real": _monto(r["monto_informe"], "CLP"),
         })
     return pd.DataFrame(filas)
 
@@ -146,7 +150,8 @@ def _nombre_proveedor_gral(codigo, nombre) -> str:
 def armar_gral(L: pd.DataFrame) -> pd.DataFrame:
     filas = []
     for _, r in L.iterrows():
-        real, prov = r["monto_real"], r["valor_prov"]
+        mon = r["moneda"]
+        prov, real = _monto(r["valor_prov"], mon), _monto(r["monto_real"], mon)
         filas.append({
             "Documento compras": str(int(r["pedido"])),
             "Posición": f"{int(r['pos']):05d}",
@@ -154,11 +159,12 @@ def armar_gral(L: pd.DataFrame) -> pd.DataFrame:
             "Por entregar (valor)": prov,
             "Nombre de proveedor": _nombre_proveedor_gral(r["proveedor_fijo"], r["nombre_proveedor"]),
             "Centro": r["centro"],
-            "Importe a Liberar": real if pd.notna(real) else None,
-            "Cantidad a Liberar": real if pd.notna(real) else None,
-            "Porcentaje a Liberar": round(real / prov * 100, 2) if pd.notna(real) and prov else None,
+            "Importe a Liberar": real,
+            "Cantidad a Liberar": real,
+            "Porcentaje a Liberar": _cumplimiento(real, prov),
             "_Responsable": r["responsable"],
             "_Estado cruce": r["estado_cruce"],
+            "_Moneda": mon,
         })
     gral = pd.DataFrame(filas)
     if not gral.empty:
@@ -214,6 +220,8 @@ def _observaciones(L: pd.DataFrame) -> pd.Series:
     rep = clave[(L["inf_vehiculo"] != "") & difiere].value_counts()
     rep = set(rep[rep > 1].index)
     for k, (i, r) in enumerate(L.iterrows()):
+        if r.get("nota_cruce"):
+            obs[k].append(r["nota_cruce"])
         if r["inf_vehiculo"] and clave.loc[i] in rep and difiere.loc[i]:
             obs[k].append("Vehículo repetido con montos distintos: validar asignación entre líneas")
         if pd.notna(r["desviacion_pct"]) and abs(r["desviacion_pct"]) >= cfg.ALERTA_DESVIACION_PCT:
@@ -221,7 +229,9 @@ def _observaciones(L: pd.DataFrame) -> pd.Series:
         if not r["pep"]:
             obs[k].append("Sin Elemento PEP")
         if r["paso_cruce"] == "Paso 2":
-            obs[k].append(f"PEP de otra marca ({r['codigo_marca']}) para texto {r['codigo_marca_texto']}")
+            obs[k].append(f"Línea imputada al PEP de otra marca ({r['codigo_marca']})")
+        if r["estado_cruce"].startswith("Moneda extranjera"):
+            obs[k].append("Informe Real en CLP: se recepciona por el valor provisorio")
     return pd.Series(["; ".join(o) for o in obs], index=L.index)
 
 
@@ -254,6 +264,11 @@ def procesar(prov, monitor, recepcion_hist, aprobadores, informe, meses,
         tolerancia_redondeo=tolerancia_redondeo,
     )
     L_todas["responsable"] = asignar_responsable(L_todas, aprobadores)
+    marca_ap = {}
+    if aprobadores is not None and not aprobadores.empty:
+        for m, c in zip(aprobadores["marca"], aprobadores["codigo_marca"]):
+            marca_ap.setdefault(c, m)
+    L_todas["marca_aprobadores"] = [marca_ap.get(c) or marca_ap.get(ct) or "" for c, ct in zip(L_todas["codigo_marca"], L_todas["codigo_marca_texto"])]
 
     ya = L_todas["documento_material_hist"].notna()
     claves_ya = {f"{a}/{b}" for a, b in zip(L_todas.loc[ya, "solped"], L_todas.loc[ya, "pos"])}
@@ -274,8 +289,42 @@ def procesar(prov, monitor, recepcion_hist, aprobadores, informe, meses,
     return _armar_resultado(L, excluidas, I, homol, informe)
 
 
-def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
+def _completar_marca_y_medio(L: pd.DataFrame, I: pd.DataFrame, homol: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pinta, ID Medio y Medio para TODAS las líneas. Si la línea se cruzó, salen
+    de su fila del Informe Real. Si no (USD o sin cruce), la marca se escribe
+    con el nombre que usa el Informe Real para ese código PEP, y el medio con
+    el que se dedujo del PEP; vehículo, burst y monto quedan vacíos porque no
+    hay fila del informe asociada.
+    """
     L = L.copy()
+    pinta_por_cod = {}
+    if homol is not None and not homol.empty:
+        for p, c in zip(homol["pinta"], homol["codigo_marca"]):
+            if c:
+                pinta_por_cod.setdefault(c, p.strip())
+    id_por_medio = {}
+    if I is not None and not I.empty and "medio_grupo" in I:
+        for g, idm in zip(I["medio_grupo"], I["id_medio"]):
+            if g and idm:
+                id_por_medio.setdefault(g, idm)
+
+    def _pinta(r):
+        if r["inf_pinta"]:
+            return r["inf_pinta"].strip()
+        for cod in (r["codigo_marca"], r["codigo_marca_texto"]):
+            if cod in pinta_por_cod:
+                return pinta_por_cod[cod]
+        return r.get("marca_aprobadores", "") or None
+
+    L["pinta_salida"] = L.apply(_pinta, axis=1)
+    L["medio_salida"] = [m.strip() if m else (g or None) for m, g in zip(L["inf_medio"], L["medio_grupo"])]
+    L["id_medio_salida"] = [i if i else (id_por_medio.get(g) or None) for i, g in zip(L["inf_id_medio"], L["medio_grupo"])]
+    return L
+
+
+def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
+    L = _completar_marca_y_medio(L, I, homol)
     L["desviacion_pct"] = np.where(
         L["monto_real"].notna() & L["valor_prov"].ne(0),
         (L["monto_real"] / L["valor_prov"] - 1) * 100, np.nan,
@@ -295,7 +344,6 @@ def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
         "lineas_generadas": int(len(L)),
         "excluidas": int(len(excluidas)),
         "cruzadas": int(L["estado_cruce"].str.startswith("Cruzado").sum()),
-        "revisar": int(L["estado_cruce"].str.contains("revisar").sum()),
         "ajuste_manual": int((L["estado_cruce"] == "Ajuste manual").sum()),
         "moneda_extranjera": int(L["estado_cruce"].str.startswith("Moneda").sum()),
         "sin_cruce": int((L["estado_cruce"] == "Sin cruce").sum()),

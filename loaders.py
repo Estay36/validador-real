@@ -305,7 +305,9 @@ def leer_informe_real(archivo, hoja: str | None = None, mes: int | None = None) 
         "empresa": _txt("empresa"),
         "rut": _txt("rut"),
         "razon_social": _txt("razon_social"),
-        "monto_real": df[col["monto"]].map(a_numero),
+        # El informe está en pesos: se redondea al peso para eliminar el ruido
+        # de punto flotante que trae Excel (14.999.999,999999993 -> 15.000.000)
+        "monto_real": pd.to_numeric(df[col["monto"]].map(a_numero), errors="coerce").round(0),
     })
     if es_base:
         mes_col = columna(df, "MES")

@@ -236,12 +236,11 @@ mes_txt = f"{NOMBRE_MES.get(mes, '')} {anio or ''}".strip()
 # Indicadores
 # ---------------------------------------------------------------------------
 st.subheader(f"Resultado: {mes_txt}")
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Líneas generadas", r["lineas_generadas"], help=f"{r['excluidas']} excluidas de {r['lineas_mes']} del mes")
-c2.metric("Cruzadas", r["cruzadas"])
-c3.metric("A revisar", r["revisar"])
-c4.metric("Sin cruce", r["sin_cruce"])
-c5.metric("Moneda extranjera", r["moneda_extranjera"])
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Líneas generadas", r["lineas_generadas"], help=f"{r['excluidas']} no incluidas de {r['lineas_mes']} del mes")
+c2.metric("Cruzadas", r["cruzadas"], help="Con monto real tomado del Informe Real")
+c3.metric("Moneda extranjera", r["moneda_extranjera"], help="Líneas en USD: se recepcionan por el valor provisorio")
+c4.metric("Sin cruce", r["sin_cruce"], help="Requieren ingresar el monto real a mano (pestaña Sin cruce)")
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Provisorio CLP (J)", formato_pesos(r["monto_provisorio_clp"]),
@@ -275,50 +274,41 @@ if r["lineas_generadas"] == 0:
 # ---------------------------------------------------------------------------
 # Pestañas
 # ---------------------------------------------------------------------------
-t_rev, t_rec, t_gral, t_excl, t_inf, t_hom = st.tabs([
-    "Revisión", "Recepción PROVISORIOS", "GRAL Recepción", "Excluidas",
-    "Informe sin uso", "Homologación de marcas",
+t_sin, t_rec, t_gral, t_ctrl = st.tabs([
+    f"Sin cruce ({r['sin_cruce']})", "Recepción PROVISORIOS", "GRAL Recepción", "Control",
 ])
 
-with t_rev:
-    st.markdown(
-        "Líneas sin cruce, con cruce a revisar o con observaciones. El monto real "
-        "puede corregirse en la columna **Importe real** y se aplica a ambas salidas."
-    )
+with t_sin:
     L = res.lineas
-    mask = (
-        L["estado_cruce"].isin(["Sin cruce", "Ajuste manual"])
-        | L["estado_cruce"].str.contains("revisar")
-        | (L["observacion"] != "")
-    )
-    rev = L.loc[mask, [
-        "solped", "pos", "texto_breve", "texto_largo", "valor_prov", "monto_real",
-        "estado_cruce", "observacion", "inf_pinta", "inf_vehiculo", "inf_tipo", "puntaje_cruce",
-    ]].rename(columns={
-        "solped": "Solped", "pos": "Pos.", "texto_breve": "Texto breve",
-        "texto_largo": "Texto carga", "valor_prov": "Valor provisorio",
-        "monto_real": "Importe real", "estado_cruce": "Estado",
-        "observacion": "Observación", "inf_pinta": "Pinta", "inf_vehiculo": "Vehículo",
-        "inf_tipo": "Tipo", "puntaje_cruce": "Puntaje",
-    })
-    if rev.empty:
-        st.success("No hay líneas que requieran revisión.")
+    mask = L["estado_cruce"].isin(["Sin cruce", "Ajuste manual"])
+    if not mask.any():
+        st.success("Todas las líneas tienen monto real. No hay nada que completar a mano.")
     else:
+        st.markdown(
+            "Estas líneas no encontraron su fila en el Informe Real. Ingrese el monto real en la "
+            "columna **Importe real** y presione **Aplicar**: el monto pasa a la columna O de "
+            "Recepción PROVISORIOS y al Importe a Liberar del GRAL."
+        )
+        sin = L.loc[mask, ["solped", "pos", "texto_breve", "texto_largo", "pinta_salida",
+                           "medio_salida", "valor_prov", "monto_real", "estado_cruce"]].rename(columns={
+            "solped": "Solped", "pos": "Pos.", "texto_breve": "Texto breve",
+            "texto_largo": "Texto carga", "pinta_salida": "Pinta", "medio_salida": "Medio",
+            "valor_prov": "Valor provisorio", "monto_real": "Importe real", "estado_cruce": "Estado",
+        })
         editado = st.data_editor(
-            rev, hide_index=True, width="stretch", key="editor_rev",
-            disabled=[c for c in rev.columns if c != "Importe real"],
+            sin, hide_index=True, width="stretch", key="editor_sin_cruce",
+            disabled=[c for c in sin.columns if c != "Importe real"],
             column_config={
                 "Valor provisorio": st.column_config.NumberColumn(format="%.0f"),
                 "Importe real": st.column_config.NumberColumn(format="%.0f"),
             },
         )
-        if st.button("Aplicar ajustes"):
+        if st.button("Aplicar"):
             base = st.session_state["resultado_base"].lineas.set_index(["solped", "pos"])["monto_real"]
             ajustes = dict(st.session_state.get("ajustes", {}))
             for _, f in editado.iterrows():
                 k = (f["Solped"], f["Pos."])
-                nuevo = f["Importe real"]
-                original = base.get(k)
+                nuevo, original = f["Importe real"], base.get(k)
                 if pd.isna(nuevo) and pd.isna(original):
                     continue
                 if pd.isna(nuevo) or pd.isna(original) or abs(float(nuevo) - float(original)) > 0.5:
@@ -326,14 +316,15 @@ with t_rev:
             st.session_state["ajustes"] = ajustes
             st.rerun()
         if st.session_state.get("ajustes"):
-            st.caption(f"Ajustes manuales aplicados: {len(st.session_state['ajustes'])}")
+            st.caption(f"Montos ingresados a mano: {len(st.session_state['ajustes'])}")
 
 with t_rec:
-    estados = sorted(res.recepcion["_Estado cruce"].unique())
-    filtro = st.multiselect("Filtrar por estado de cruce", estados, default=estados)
-    vista = res.recepcion[res.recepcion["_Estado cruce"].isin(filtro)]
-    cols = cfg.COLUMNAS_RECEPCION[:-2] + ["SOX", "_Estado cruce", "_Pinta", "_Proveedor-Vehiculo", "_Burst", "_Monto Neto Real"]
-    st.dataframe(vista[[c for c in cols if c]], hide_index=True, width="stretch")
+    st.caption("Vista previa de la hoja que se descarga. Columnas A:AC = plantilla SAP; "
+               "a la derecha, la fila del Informe Real de donde salió el monto.")
+    cols = [c for c in cfg.COLUMNAS_RECEPCION if c] + [
+        "_Estado cruce", "_Observación", "_Pinta", "_Medio", "_Proveedor-Vehiculo", "_Burst", "_Monto Neto Real"]
+    vista = res.recepcion[cols].rename(columns=lambda c: c.lstrip("_"))
+    st.dataframe(vista, hide_index=True, width="stretch")
 
 with t_gral:
     resp = list(res.gral_por_responsable)
@@ -341,35 +332,32 @@ with t_gral:
     df = res.gral if sel == "Data" else res.gral_por_responsable[sel]
     st.dataframe(df[cfg.COLUMNAS_GRAL], hide_index=True, width="stretch")
 
-with t_excl:
+with t_ctrl:
+    st.markdown("**Líneas del mes no incluidas**")
     if res.excluidas.empty:
-        st.write("No hay líneas excluidas.")
+        st.write("Todas las líneas del mes están incluidas.")
     else:
-        st.dataframe(
-            res.excluidas[["solped", "pos", "pedido_txt", "texto_breve", "valor_prov",
-                           "comentario", "motivo_exclusion"]],
-            hide_index=True, width="stretch",
-        )
-
-with t_inf:
-    st.markdown(
-        "Filas del Informe Real del mes que no corresponden a ninguna línea provisoria, "
-        "ni pendiente ni ya recepcionada (p. ej. Meta/Google directo en CLP, filas "
-        "bonificadas en $0 o montos que todavía no tienen provisorio cargado)."
-    )
+        st.dataframe(res.excluidas["motivo_exclusion"].value_counts().rename_axis("Motivo")
+                     .reset_index(name="Líneas"), hide_index=True)
+        with st.expander("Ver detalle"):
+            st.dataframe(
+                res.excluidas[["solped", "pos", "pedido_txt", "texto_breve", "valor_prov",
+                               "comentario", "motivo_exclusion"]],
+                hide_index=True, width="stretch",
+            )
+    st.markdown("**Filas del Informe Real sin línea provisoria**")
+    st.caption("Gasto real que no corresponde a ninguna línea de PROVISORIOS "
+               "(p. ej. Meta/Google directo en CLP, bonificadas en $0, montos sin provisorio).")
     st.dataframe(
         res.informe_sin_uso[["fila_informe", "pinta", "medio", "vehiculo", "burst",
-                             "tipo", "monto_real", "codigo_marca", "motivo_no_uso"]],
+                             "monto_real", "motivo_no_uso"]],
         hide_index=True, width="stretch",
     )
-
-with t_hom:
-    st.markdown(
-        "Homologación de la Pinta del Informe Real con el código de marca del "
-        "Elemento PEP. Las marcas sin homologar se agregan en "
-        "`ALIAS_MARCA_A_CODIGO` (config.py)."
-    )
-    st.dataframe(res.homologacion, hide_index=True, width="stretch")
+    pend = res.homologacion[res.homologacion["codigo_marca"] == ""]
+    if not pend.empty:
+        st.markdown("**Marcas del Informe Real sin homologar**")
+        st.caption("Agregarlas en `ALIAS_MARCA_A_CODIGO` (config.py).")
+        st.dataframe(pend[["pinta"]], hide_index=True)
 
 # ---------------------------------------------------------------------------
 # Descargas
