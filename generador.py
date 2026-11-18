@@ -186,23 +186,28 @@ def separar_por_responsable(gral: pd.DataFrame) -> dict[str, pd.DataFrame]:
 # ---------------------------------------------------------------------------
 def asignar_responsable(L: pd.DataFrame, aprobadores: pd.DataFrame) -> list[str]:
     """
-    Responsable = etiqueta del bloque de la pestaña Aprobadores donde está la
-    marca. Se busca primero por (sociedad del PEP, código de marca), porque
-    un mismo código puede repetirse en otro bloque con PEP de otro año/sociedad
-    (MANANTIAL M.26.A80 vs. M.25.A81); luego solo por código (primera aparición).
+    Responsable de recepción de cada línea (define su pestaña en el GRAL).
+    Orden de prioridad:
+      1. RESPONSABLE_POR_MARCA de config (excepciones: Watts, Frugo...).
+      2. Nombre del responsable en la pestaña Aprobadores, si el archivo lo trae.
+      3. RESPONSABLE_POR_UEN de config, según la UEN de la marca en Aprobadores.
+    La marca se busca primero por (sociedad del PEP, código), porque un mismo
+    código puede repetirse con PEP de otra sociedad (MANANTIAL A80 y A81).
     """
-    if aprobadores is None or aprobadores.empty:
-        return [""] * len(L)
     por_soc, por_cod = {}, {}
-    for pref, cod, resp in zip(aprobadores["pep_prefijo"], aprobadores["codigo_marca"], aprobadores["responsable"]):
-        resp = resp if isinstance(resp, str) else ""
-        soc = sociedad_desde_pep(f"{pref}X.")
-        por_soc.setdefault((soc, cod), resp)
-        por_cod.setdefault(cod, resp)
+    if aprobadores is not None and not aprobadores.empty:
+        for pref, cod, resp, uen in zip(aprobadores["pep_prefijo"], aprobadores["codigo_marca"],
+                                        aprobadores["responsable"], aprobadores["uen"]):
+            resp = resp if isinstance(resp, str) and resp else cfg.RESPONSABLE_POR_UEN.get(uen, "")
+            soc = sociedad_desde_pep(f"{pref}X.")
+            por_soc.setdefault((soc, cod), resp)
+            por_cod.setdefault(cod, resp)
     salida = []
     for pep, cod, cod_txt in zip(L["pep"], L["codigo_marca"], L["codigo_marca_texto"]):
         soc = sociedad_desde_pep(pep)
-        salida.append(por_soc.get((soc, cod)) or por_cod.get(cod) or por_cod.get(cod_txt) or "")
+        resp = (cfg.RESPONSABLE_POR_MARCA.get(cod) or por_soc.get((soc, cod)) or por_cod.get(cod)
+                or cfg.RESPONSABLE_POR_MARCA.get(cod_txt) or por_cod.get(cod_txt) or "")
+        salida.append(resp)
     return salida
 
 

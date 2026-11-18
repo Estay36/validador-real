@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+# No subir planillas con datos reales
+*.xlsx
+*.xls
+!tests/fixtures/*.xlsx

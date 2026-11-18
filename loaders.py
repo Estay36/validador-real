@@ -185,25 +185,73 @@ def leer_recepcion_existente(archivo) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def leer_aprobadores(archivo) -> pd.DataFrame:
     """
-    Columnas A:H de la pestaña Aprobadores: UEN, APROBADOR, CENTRO, COD.,
-    MARCA, PEP (prefijo), código de marca y, en la columna H, el nombre del
-    responsable de recepción al inicio de cada bloque (se propaga hacia abajo).
+    Maestro de marcas de la pestaña Aprobadores. Las columnas se ubican por su
+    encabezado (UEN, MARCA, PEP, CENTRO, APROBADOR), no por posición, porque el
+    orden ha cambiado entre versiones del archivo:
+      - 2025: UEN | APROBADOR | CENTRO | COD. | MARCA | PEP | código | responsable
+      - 2026: UEN | MARCA | COD. | PEP | código | CENTRO | APROBADOR
+    El código de marca (5 caracteres) está en la columna sin título a la derecha
+    de PEP. Si existe una columna con el nombre del responsable de recepción al
+    inicio de cada bloque (ELOISA, RODRIGO...), se propaga hacia abajo; si no,
+    el responsable se asigna después con RESPONSABLE_POR_UEN de config.
     """
+    vacio = pd.DataFrame(columns=["uen", "aprobador", "centro", "marca", "pep_prefijo",
+                                  "codigo_marca", "responsable", "marca_norm"])
     try:
         raw = _leer_hoja(archivo, cfg.HOJA_APROBADORES, header=None)
     except ErrorEstructura:
-        return pd.DataFrame(columns=["uen", "aprobador", "centro", "marca", "codigo_marca", "responsable"])
-    raw = raw.iloc[:, :8]
-    raw.columns = ["uen", "aprobador", "centro", "cod_aprob", "marca", "pep_prefijo", "codigo_marca", "responsable"]
-    raw = raw.iloc[1:]
-    raw["responsable"] = raw["responsable"].map(lambda v: str(v).strip().upper() if pd.notna(v) and str(v).strip() else None)
-    raw["responsable"] = raw["responsable"].ffill()
-    raw = raw[raw["marca"].notna() & raw["codigo_marca"].notna()].copy()
-    raw["codigo_marca"] = raw["codigo_marca"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
-    raw["marca"] = raw["marca"].astype(str).str.strip()
-    raw["marca_norm"] = raw["marca"].map(normalizar)
-    raw["centro"] = raw["centro"].map(lambda v: str(a_entero_id(v)) if a_entero_id(v) is not None else "")
-    return raw.reset_index(drop=True)
+        return vacio
+    if raw.empty:
+        return vacio
+
+    # Fila de encabezado: la primera que contiene MARCA y PEP
+    fila_enc = None
+    for i in range(min(10, len(raw))):
+        valores = [normalizar(v) for v in raw.iloc[i].tolist()]
+        if "MARCA" in valores and "PEP" in valores:
+            fila_enc = i
+            break
+    if fila_enc is None:
+        return vacio
+    enc = [normalizar(v) for v in raw.iloc[fila_enc].tolist()]
+
+    def _col(nombre):
+        return enc.index(nombre) if nombre in enc else None
+
+    c_uen, c_marca, c_pep = _col("UEN"), _col("MARCA"), _col("PEP")
+    c_centro, c_aprob = _col("CENTRO"), _col("APROBADOR")
+    c_codigo = c_pep + 1                       # columna sin título a la derecha de PEP
+    datos = raw.iloc[fila_enc + 1:]
+
+    # Columna de responsables: una columna (de las primeras 10) cuyos valores
+    # son etiquetas conocidas de responsable
+    conocidos = set(cfg.PESTANAS_RESPONSABLE) | {"RIC"}
+    c_resp = None
+    for j in range(min(10, raw.shape[1])):
+        vals = {str(v).strip().upper() for v in datos.iloc[:, j].dropna() if str(v).strip()}
+        if vals and vals <= conocidos | {""} and vals & set(cfg.PESTANAS_RESPONSABLE):
+            c_resp = j
+            break
+
+    def _serie(c):
+        return datos.iloc[:, c] if c is not None and c < datos.shape[1] else pd.Series([None] * len(datos), index=datos.index)
+
+    out = pd.DataFrame({
+        "uen": _serie(c_uen).map(lambda v: str(v).strip().upper() if pd.notna(v) else ""),
+        "aprobador": _serie(c_aprob).map(lambda v: str(v).strip() if pd.notna(v) else ""),
+        "centro": _serie(c_centro).map(lambda v: str(a_entero_id(v)) if a_entero_id(v) is not None else ""),
+        "marca": _serie(c_marca),
+        "pep_prefijo": _serie(c_pep).map(lambda v: str(v).strip() if pd.notna(v) else ""),
+        "codigo_marca": _serie(c_codigo),
+        "responsable": _serie(c_resp).map(lambda v: str(v).strip().upper() if pd.notna(v) and str(v).strip() else None),
+    })
+    out["responsable"] = out["responsable"].ffill() if c_resp is not None else None
+    out = out[out["marca"].notna() & out["codigo_marca"].notna()].copy()
+    out["codigo_marca"] = out["codigo_marca"].astype(str).str.replace(".", "", regex=False).str.strip().str.upper()
+    out["marca"] = out["marca"].astype(str).str.strip()
+    out["marca_norm"] = out["marca"].map(normalizar)
+    out = out[(out["codigo_marca"] != "") & (out["codigo_marca"] != "NAN")]
+    return out.reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------

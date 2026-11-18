@@ -13,7 +13,7 @@ de modo que la lógica de los demás módulos no tenga valores "mágicos".
 # ---------------------------------------------------------------------------
 # Versión de la lógica. Cambiarla obliga a recalcular aunque la sesión de
 # Streamlit tenga guardado un resultado de una versión anterior.
-VERSION_LOGICA = "2026-11-18"
+VERSION_LOGICA = "2026-11-18b"
 
 HOJA_PROVISORIOS = "PROVISORIOS"
 HOJA_MONITOR_PROV = "Monitor Prov"
@@ -118,7 +118,29 @@ COLUMNAS_GRAL = [
 LARGO_NOMBRE_PROVEEDOR_GRAL = 24      # SAP trunca la razón social a 24 caracteres
 SEPARADOR_PROVEEDOR_GRAL = "    "     # código + 4 espacios + razón social
 
-# Pestaña por responsable en GRAL (etiqueta en columna H de "Aprobadores")
+# Responsable de recepción por UEN (columna UEN de la pestaña Aprobadores).
+# Reproduce los bloques del archivo 2025, donde el nombre venía en la columna H;
+# el archivo 2026 ya no lo trae.
+RESPONSABLE_POR_UEN = {
+    "CORP": "ELOISA",
+    "CPCH": "ELOISA",
+    "VSPT": "ELOISA",
+    "CERVEZAS": "RODRIGO",
+    "BCP": "CONSTANZA",
+    "ECCUSA": "CONSTANZA",
+    "ACCUN": "YUGLEY",
+    "MANANTIAL": "YUGLEY",
+    "CAROZZI": "YUGLEY",
+}
+# Excepciones por código de marca (tienen prioridad sobre la UEN):
+# Watts, Watts Selección y Frugo son ECCUSA pero los recepciona YUGLEY.
+RESPONSABLE_POR_MARCA = {
+    "NWATT": "YUGLEY",
+    "NWTSE": "YUGLEY",
+    "NFRUG": "YUGLEY",
+}
+
+# Pestaña por responsable en GRAL
 PESTANAS_RESPONSABLE = {
     "YUGLEY": "yu",
     "ELOISA": "ELO",
