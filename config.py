@@ -11,6 +11,10 @@ de modo que la lógica de los demás módulos no tenga valores "mágicos".
 # acentos ni espacios sobrantes, porque en el archivo vienen con espacios
 # al final, p. ej. "Aprobadores ").
 # ---------------------------------------------------------------------------
+# Versión de la lógica. Cambiarla obliga a recalcular aunque la sesión de
+# Streamlit tenga guardado un resultado de una versión anterior.
+VERSION_LOGICA = "2026-11-18"
+
 HOJA_PROVISORIOS = "PROVISORIOS"
 HOJA_MONITOR_PROV = "Monitor Prov"
 HOJA_RECEPCION_PROV = "Recepción PROVISORIOS"

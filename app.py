@@ -217,8 +217,13 @@ tol = st.sidebar.number_input(
 # ---------------------------------------------------------------------------
 # Proceso
 # ---------------------------------------------------------------------------
-clave_proceso = (_hash(b_cargas), _hash(b_informe), hoja, mes, excluir_ok, moneda_100, tol)
-if st.session_state.get("clave_proceso") != clave_proceso:
+clave_proceso = (cfg.VERSION_LOGICA, _hash(b_cargas), _hash(b_informe), hoja, mes,
+                 excluir_ok, moneda_100, tol)
+# Se recalcula si cambian los archivos, los parámetros o la versión del código;
+# también si el resultado guardado no tiene las columnas que espera esta versión.
+_base = st.session_state.get("resultado_base")
+_incompleto = _base is None or "pinta_salida" not in getattr(_base, "lineas", pd.DataFrame()).columns
+if st.session_state.get("clave_proceso") != clave_proceso or _incompleto:
     with st.spinner("Cruzando provisorios con Informe Real..."):
         st.session_state["resultado_base"] = procesar(
             prov, monitor, hist, aprob, informe, [mes],
@@ -227,6 +232,13 @@ if st.session_state.get("clave_proceso") != clave_proceso:
         )
     st.session_state["clave_proceso"] = clave_proceso
     st.session_state["ajustes"] = {}
+    if "pinta_salida" not in st.session_state["resultado_base"].lineas.columns:
+        st.error(
+            "El repositorio tiene archivos de versiones distintas (por ejemplo, un app.py nuevo con "
+            "un generador.py antiguo). Suba nuevamente TODOS los archivos .py del último zip y "
+            "reinicie la app desde 'Manage app → Reboot app'."
+        )
+        st.stop()
 
 res = aplicar_ajustes(st.session_state["resultado_base"], st.session_state.get("ajustes", {}))
 r = res.resumen
