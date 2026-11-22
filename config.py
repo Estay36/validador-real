@@ -13,7 +13,7 @@ de modo que la lógica de los demás módulos no tenga valores "mágicos".
 # ---------------------------------------------------------------------------
 # Versión de la lógica. Cambiarla obliga a recalcular aunque la sesión de
 # Streamlit tenga guardado un resultado de una versión anterior.
-VERSION_LOGICA = "2026-11-18b"
+VERSION_LOGICA = "2026-11-20"
 
 HOJA_PROVISORIOS = "PROVISORIOS"
 HOJA_MONITOR_PROV = "Monitor Prov"
@@ -113,8 +113,21 @@ STATUS_TRATAMIENTO_DEFAULT = "B"
 COLUMNAS_GRAL = [
     "Documento compras", "Posición", "Texto breve", "Por entregar (valor)",
     "Nombre de proveedor", "Centro", "Importe a Liberar",
-    "Cantidad a Liberar", "Porcentaje a Liberar",
+    "Cantidad a Liberar", "Porcentaje a Liberar", "Observación",
 ]
+
+# Responsable para gasto real sin provisorio cuya marca no tiene código PEP,
+# según la empresa (columna EMPRESA del Informe Real). Se busca por palabra clave.
+RESPONSABLE_POR_EMPRESA_INFORME = {
+    "VINA SAN PEDRO": "ELOISA",
+    "PISQUERA": "ELOISA",
+    "CERVECER": "RODRIGO",
+    "BEBIDAS CCU -PEPSICO": "CONSTANZA",
+    "BEBIDAS CCU-PEPSICO": "CONSTANZA",
+    "EMBOTELLADORAS": "CONSTANZA",
+    "AGUAS CCU": "YUGLEY",
+    "CAROZZI": "YUGLEY",
+}
 LARGO_NOMBRE_PROVEEDOR_GRAL = 24      # SAP trunca la razón social a 24 caracteres
 SEPARADOR_PROVEEDOR_GRAL = "    "     # código + 4 espacios + razón social
 
@@ -223,6 +236,12 @@ PESO_MONTO = 0.40
 PUNTAJE_MINIMO = 55
 # Bajo este puntaje (pero sobre el mínimo) el cruce se marca "Revisar"
 PUNTAJE_REVISAR = 70
+# Paso por vehículo: si dentro de la marca y el medio el vehículo coincide
+# claramente (similitud >= este valor), se cruza aunque el monto real sea muy
+# distinto del provisorio (p. ej. 1.428.571 provisorio vs. 2.927.980 real).
+UMBRAL_SOLO_VEHICULO = 80
+# Vínculo de líneas en USD (Meta/Google directo) con sus filas en CLP del informe
+UMBRAL_VINCULO_USD = 70
 # Diferencia relativa real vs. provisorio a partir de la cual se alerta
 ALERTA_DESVIACION_PCT = 20.0
 # Tolerancia para considerar dos montos iguales (pesos)
@@ -256,6 +275,8 @@ SINONIMOS_VEHICULO = {
     "PROGRAM": "PROGRAMMATIC", "PGR": "PROGRAMMATIC", "PG": "PROGRAMMATIC",
     "MH": "MASTHEAD", "FACEBO": "FACEBOOK", "FACE": "FACEBOOK", "META": "FACEBOOK",
     "MATT": "MATTERKIND", "PUBLICIDAD": "", "PUBLICITARIA": "",
+    # "PROGRAMÁTICA - MEDIOS MINORISTAS" (carga) = "PROGRAMMATIC - RETAIL MEDIA" (informe)
+    "MINORISTAS": "RETAIL", "MINORISTA": "RETAIL", "MEDIOS": "MEDIA",
 }
 
 # Comentarios (columna "RECEPCIÓN / COMENTARIO" de PROVISORIOS) que indican

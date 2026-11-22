@@ -302,10 +302,11 @@ with t_sin:
             "Recepción PROVISORIOS y al Importe a Liberar del GRAL."
         )
         sin = L.loc[mask, ["solped", "pos", "texto_breve", "texto_largo", "pinta_salida",
-                           "medio_salida", "valor_prov", "monto_real", "estado_cruce"]].rename(columns={
+                           "medio_salida", "valor_prov", "monto_real", "estado_cruce", "observacion"]].rename(columns={
             "solped": "Solped", "pos": "Pos.", "texto_breve": "Texto breve",
             "texto_largo": "Texto carga", "pinta_salida": "Pinta", "medio_salida": "Medio",
             "valor_prov": "Valor provisorio", "monto_real": "Importe real", "estado_cruce": "Estado",
+            "observacion": "Observación",
         })
         editado = st.data_editor(
             sin, hide_index=True, width="stretch", key="editor_sin_cruce",
@@ -342,6 +343,9 @@ with t_gral:
     resp = list(res.gral_por_responsable)
     sel = st.radio("Pestaña", ["Data"] + resp, horizontal=True)
     df = res.gral if sel == "Data" else res.gral_por_responsable[sel]
+    if r.get("filas_real_sin_provisorio"):
+        st.caption(f"Al final de cada pestaña van {r['filas_real_sin_provisorio']} filas de gasto real sin "
+                   "provisorio (sin Pedido ni posición), para que el responsable gestione su carga.")
     st.dataframe(df[cfg.COLUMNAS_GRAL], hide_index=True, width="stretch")
 
 with t_ctrl:

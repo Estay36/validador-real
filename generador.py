@@ -18,7 +18,7 @@ import pandas as pd
 import config as cfg
 from cruce_real import cruzar_informe_real
 from enlace import enlazar_monitor
-from utils import codigo_marca_pep, sociedad_desde_pep
+from utils import codigo_marca_pep, normalizar, sociedad_desde_pep
 
 
 @dataclass
@@ -147,7 +147,15 @@ def _nombre_proveedor_gral(codigo, nombre) -> str:
     return f"{cod}{cfg.SEPARADOR_PROVEEDOR_GRAL}{str(nombre)[:cfg.LARGO_NOMBRE_PROVEEDOR_GRAL]}"
 
 
-def armar_gral(L: pd.DataFrame) -> pd.DataFrame:
+OBS_REAL_SIN_PROVISORIO = "Real sin provisorio: no tiene Pedido; requiere cargar Solped antes de recepcionar"
+
+
+def armar_gral(L: pd.DataFrame, I: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    Una fila por línea pendiente (con Pedido y posición) y, al final, una fila
+    por cada gasto del Informe Real sin provisorio, sin Documento compras ni
+    posición, para que el responsable lo vea y gestione la carga.
+    """
     filas = []
     for _, r in L.iterrows():
         mon = r["moneda"]
@@ -162,13 +170,38 @@ def armar_gral(L: pd.DataFrame) -> pd.DataFrame:
             "Importe a Liberar": real,
             "Cantidad a Liberar": real,
             "Porcentaje a Liberar": _cumplimiento(real, prov),
+            "Observación": ("Sin cruce: completar Importe a Liberar" if r["estado_cruce"] == "Sin cruce" else None),
             "_Responsable": r["responsable"],
             "_Estado cruce": r["estado_cruce"],
             "_Moneda": mon,
+            "_Orden": 0,
         })
+    if I is not None and not I.empty:
+        sin_prov = I[(~I["usada"]) & (I["motivo_no_uso"] == "Sin línea provisoria asociada")
+                     & (I["monto_real"].abs() > 0)]
+        for _, f in sin_prov.iterrows():
+            real = _monto(f["monto_real"], "CLP")
+            texto = f"SIN PROVISORIO {f['pinta'].strip()} {f['medio'].strip()} {f['vehiculo'].strip()}"
+            filas.append({
+                "Documento compras": None,
+                "Posición": None,
+                "Texto breve": texto,
+                "Por entregar (valor)": None,
+                "Nombre de proveedor": (f.get("razon_social") or "").strip() or None,
+                "Centro": f.get("centro_aprob") or None,
+                "Importe a Liberar": real,
+                "Cantidad a Liberar": real,
+                "Porcentaje a Liberar": None,
+                "Observación": f"{OBS_REAL_SIN_PROVISORIO} (fila {int(f['fila_informe'])} del Informe Real)",
+                "_Responsable": f.get("responsable", ""),
+                "_Estado cruce": "Real sin provisorio",
+                "_Moneda": "CLP",
+                "_Orden": 1,
+            })
     gral = pd.DataFrame(filas)
     if not gral.empty:
-        gral = gral.sort_values(["Documento compras", "Posición"]).reset_index(drop=True)
+        gral = (gral.sort_values(["_Orden", "Documento compras", "Posición", "Texto breve"], na_position="last")
+                .drop(columns="_Orden").reset_index(drop=True))
     return gral
 
 
@@ -176,7 +209,7 @@ def separar_por_responsable(gral: pd.DataFrame) -> dict[str, pd.DataFrame]:
     salida = {}
     for resp, g in gral.groupby("_Responsable", sort=False):
         nombre = cfg.PESTANAS_RESPONSABLE.get(resp, resp or "Sin responsable")
-        salida[nombre] = g.drop(columns=["_Responsable", "_Estado cruce"])
+        salida[nombre] = g.drop(columns=["_Responsable"])
     orden = list(cfg.PESTANAS_RESPONSABLE.values())
     return dict(sorted(salida.items(), key=lambda kv: orden.index(kv[0]) if kv[0] in orden else 99))
 
@@ -209,6 +242,25 @@ def asignar_responsable(L: pd.DataFrame, aprobadores: pd.DataFrame) -> list[str]
                 or cfg.RESPONSABLE_POR_MARCA.get(cod_txt) or por_cod.get(cod_txt) or "")
         salida.append(resp)
     return salida
+
+
+def responsable_y_centro_informe(I: pd.DataFrame, aprobadores: pd.DataFrame):
+    """Responsable y centro para filas del Informe Real (gasto sin provisorio)."""
+    tmp = pd.DataFrame({"pep": "", "codigo_marca": I["codigo_marca"].fillna(""),
+                        "codigo_marca_texto": ""}, index=I.index)
+    resp = asignar_responsable(tmp, aprobadores)
+    centro = {}
+    if aprobadores is not None and not aprobadores.empty:
+        for c, cen in zip(aprobadores["codigo_marca"], aprobadores["centro"]):
+            if cen:
+                centro.setdefault(c, cen)
+    salida_resp = []
+    for r, emp in zip(resp, I["empresa"].fillna("")):
+        if not r:
+            e = normalizar(emp)
+            r = next((v for k, v in cfg.RESPONSABLE_POR_EMPRESA_INFORME.items() if normalizar(k) in e), "")
+        salida_resp.append(r)
+    return salida_resp, [centro.get(c, "") for c in I["codigo_marca"].fillna("")]
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +330,11 @@ def procesar(prov, monitor, recepcion_hist, aprobadores, informe, meses,
     ya = L_todas["documento_material_hist"].notna()
     claves_ya = {f"{a}/{b}" for a, b in zip(L_todas.loc[ya, "solped"], L_todas.loc[ya, "pos"])}
     I["destino"] = np.where(
-        I["linea_asignada"].isin(claves_ya), "Línea ya recepcionada",
-        np.where(I["usada"], "Línea pendiente (en la salida)", I["motivo_no_uso"]),
+        I["vinculo"] == "USD", "Línea en USD (Meta/Google directo)",
+        np.where(I["linea_asignada"].isin(claves_ya), "Línea ya recepcionada",
+                 np.where(I["usada"], "Línea pendiente (en la salida)", I["motivo_no_uso"])),
     )
+    I["responsable"], I["centro_aprob"] = responsable_y_centro_informe(I, aprobadores)
 
     if excluir_recepcionadas:
         L = L_todas[~ya].copy()
@@ -338,7 +392,7 @@ def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
     L = L.sort_values(["solped", "pos"]).reset_index(drop=True)
 
     recepcion = armar_recepcion(L)
-    gral = armar_gral(L)
+    gral = armar_gral(L, I)
     por_resp = separar_por_responsable(gral)
     sin_uso = I[~I["usada"]].copy()
     ya_recep_inf = I[I.get("destino", pd.Series("", index=I.index)) == "Línea ya recepcionada"]
@@ -357,6 +411,8 @@ def _armar_resultado(L, excluidas, I, homol, informe) -> Resultado:
         "monto_informe_total": float(informe["monto_real"].sum()),
         "monto_informe_sin_uso": float(sin_uso["monto_real"].sum()),
         "filas_informe_sin_uso": int(len(sin_uso)),
+        "filas_real_sin_provisorio": int((gral.get("_Estado cruce", pd.Series(dtype=str)) == "Real sin provisorio").sum()),
+        "monto_real_sin_provisorio": float(gral.loc[gral.get("_Estado cruce", pd.Series(dtype=str)) == "Real sin provisorio", "Importe a Liberar"].sum()) if not gral.empty else 0.0,
         "filas_informe_ya_recepcionadas": int(len(ya_recep_inf)),
         "monto_informe_ya_recepcionado": float(ya_recep_inf["monto_real"].sum()),
         "lineas_ya_recepcionadas": int((excluidas.get("motivo_exclusion", pd.Series(dtype=str))

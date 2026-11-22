@@ -166,6 +166,7 @@ def _hoja_resumen(wb, res, contexto: dict):
             ("   Cruzadas con el Informe Real", r["cruzadas"]),
             ("   En moneda extranjera (100 % del provisorio)", r["moneda_extranjera"]),
             ("   Sin cruce: completar columna O a mano", r["sin_cruce"]),
+            ("Gasto real sin provisorio (al final del GRAL, en naranjo)", r.get("filas_real_sin_provisorio", 0)),
         ]),
         ("Montos en pesos", [
             ("Provisorio de las líneas incluidas (J)", r["monto_provisorio_clp"]),
@@ -173,6 +174,7 @@ def _hoja_resumen(wb, res, contexto: dict):
             ("Diferencia (O − J)", r["monto_real_clp"] - r["monto_provisorio_clp"]),
             ("Informe Real: asociado a líneas ya recepcionadas", r.get("monto_informe_ya_recepcionado", 0.0)),
             ("Informe Real: sin línea provisoria (detalle en hoja Control)", r["monto_informe_sin_uso"]),
+            ("   de ello, gasto real sin provisorio incluido en el GRAL", r.get("monto_real_sin_provisorio", 0.0)),
         ]),
     ]
     for titulo, filas in bloques:
@@ -271,18 +273,32 @@ def exportar_recepcion(res, contexto: dict) -> bytes:
     return buf.getvalue()
 
 
+_RELLENO_SIN_PROVISORIO = PatternFill("solid", fgColor="FCE5CD")
+
+
+def _hoja_gral(ws, df: pd.DataFrame):
+    rellenos = {c: _RELLENO_GRIS_GRAL for c in cfg.COLUMNAS_GRAL}
+    mon = df["_Moneda"].tolist() if "_Moneda" in df else None
+    _escribir_tabla(ws, df[cfg.COLUMNAS_GRAL], rellenos=rellenos, monedas=mon, ancho_max=60)
+    estados = df["_Estado cruce"].tolist() if "_Estado cruce" in df else []
+    col_imp = cfg.COLUMNAS_GRAL.index("Importe a Liberar") + 1
+    for i, est in enumerate(estados, start=2):
+        if est == "Real sin provisorio":       # fila completa en naranjo
+            for j in range(1, len(cfg.COLUMNAS_GRAL) + 1):
+                ws.cell(row=i, column=j).fill = _RELLENO_SIN_PROVISORIO
+        elif est == "Sin cruce":                # importe por completar en rojo
+            ws.cell(row=i, column=col_imp).fill = _RELLENO_SIN_CRUCE
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cfg.COLUMNAS_GRAL))}{max(len(df), 1) + 1}"
+
+
 def exportar_gral(res) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Data"
-    rellenos = {c: _RELLENO_GRIS_GRAL for c in cfg.COLUMNAS_GRAL}
-    gral = res.gral
-    monedas = gral["_Moneda"].tolist() if "_Moneda" in gral else None
-    _escribir_tabla(ws, gral[cfg.COLUMNAS_GRAL], rellenos=rellenos, monedas=monedas)
+    _hoja_gral(ws, res.gral)
     for nombre, df in res.gral_por_responsable.items():
-        w = wb.create_sheet(str(nombre)[:31])
-        mon = df["_Moneda"].tolist() if "_Moneda" in df else None
-        _escribir_tabla(w, df[cfg.COLUMNAS_GRAL], rellenos=rellenos, monedas=mon)
+        _hoja_gral(wb.create_sheet(str(nombre)[:31]), df)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

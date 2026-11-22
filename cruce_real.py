@@ -304,6 +304,25 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
     def _libres(idx):
         return [j for j in idx if not I.at[j, "usada"] and I.at[j, "motivo_no_uso"] == ""]
 
+    def _puntaje_vehiculo_par(il, ii):
+        fila = I.loc[ii]
+        tl = _textos_linea(il, L.at[il, "codigo_marca"])
+        veh = _quitar_ruido(fila["vehiculo"], marca_tokens.get(fila["codigo_marca"], set()))
+        return puntaje_vehiculo(veh, fila["razon_social"], tl)
+
+    def _resolver_por_vehiculo(idx_lineas, idx_informe, paso):
+        """Cruce solo por vehículo (ignora el monto) cuando la coincidencia es clara."""
+        idx_lineas = [i for i in idx_lineas if L.at[i, "estado_cruce"] == ""]
+        idx_informe = _libres(idx_informe)
+        if not idx_lineas or not idx_informe:
+            return
+        S = np.array([[_puntaje_vehiculo_par(il, ii) for ii in idx_informe] for il in idx_lineas])
+        fi, co = linear_sum_assignment(-S)
+        for a, b in zip(fi, co):
+            if S[a, b] >= cfg.UMBRAL_SOLO_VEHICULO:
+                _asignar(idx_lineas[a], idx_informe[b], S[a, b],
+                         "Monto real muy distinto del provisorio: cruzado por vehículo", paso)
+
     def _resolver(idx_lineas, idx_informe, paso, factor=1.0, exigir_marca_texto=False,
                   aceptar_monto_exacto=False):
         idx_lineas = [i for i in idx_lineas if L.at[i, "estado_cruce"] == ""]
@@ -347,6 +366,12 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
         if cod and idx_i is not None:
             _resolver(list(idx_l), list(idx_i), paso=1)
 
+    # Paso 1b: mismo grupo, solo por vehículo (para reales muy distintos del provisorio)
+    for (cod, med), idx_l in L.loc[candidatas].groupby(["codigo_marca", "medio_grupo"]).groups.items():
+        idx_i = grupos_inf.get((cod, med))
+        if cod and idx_i is not None:
+            _resolver_por_vehiculo(list(idx_l), list(idx_i), paso=1)
+
     # Paso 2: marca según el texto de la línea (cuando difiere del PEP), mismo medio
     pend = [i for i in candidatas if L.at[i, "estado_cruce"] == ""]
     por_texto = defaultdict(list)
@@ -379,6 +404,50 @@ def cruzar_informe_real(lineas: pd.DataFrame, informe: pd.DataFrame,
         idx_l = [i for i in pend if L.at[i, "medio_grupo"] == med]
         idx_i = [j for j in sin_marca if I.at[j, "medio_grupo"] == med]
         _resolver(idx_l, idx_i, paso=4, exigir_marca_texto=True)
+
+    # Vínculo de las líneas en USD (Meta/Google directo) con sus filas del
+    # informe, que vienen en CLP. No cambia el monto (se recepciona el USD
+    # provisorio), pero evita que esas filas parezcan gasto sin provisorio.
+    I["vinculo"] = ""
+    idx_usd = list(L.index[extranjera])
+    usd_por_marca = defaultdict(list)
+    for i in idx_usd:
+        for cod in {L.at[i, "codigo_marca"], L.at[i, "codigo_marca_texto"]} - {""}:
+            usd_por_marca[(cod, L.at[i, "medio_grupo"])].append(i)
+    for j in I.index:
+        if I.at[j, "usada"] or I.at[j, "motivo_no_uso"]:
+            continue
+        cands = usd_por_marca.get((I.at[j, "codigo_marca"], I.at[j, "medio_grupo"]), [])
+        if not cands:
+            continue
+        puntajes = [(_puntaje_vehiculo_par(i, j), i) for i in cands]
+        sv, i = max(puntajes)
+        if sv < cfg.UMBRAL_VINCULO_USD:
+            continue
+        I.at[j, "usada"] = True
+        I.at[j, "vinculo"] = "USD"
+        I.at[j, "linea_asignada"] = f"{L.at[i, 'solped']}/{L.at[i, 'pos']}"
+        L.at[i, "monto_informe"] = (0 if pd.isna(L.at[i, "monto_informe"]) else L.at[i, "monto_informe"]) + I.at[j, "monto_real"]
+        if not L.at[i, "inf_vehiculo"]:
+            L.at[i, "inf_pinta"] = I.at[j, "pinta"]
+            L.at[i, "inf_id_medio"] = I.at[j, "id_medio"]
+            L.at[i, "inf_medio"] = I.at[j, "medio"]
+            L.at[i, "inf_vehiculo"] = I.at[j, "vehiculo"]
+            L.at[i, "inf_burst"] = I.at[j, "burst"]
+            L.at[i, "fila_informe"] = I.at[j, "fila_informe"]
+
+    # Líneas sin cruce cuya única fila posible es una bonificada ($0)
+    pend = [i for i in candidatas if L.at[i, "estado_cruce"] == ""]
+    ceros = [j for j in I.index if I.at[j, "motivo_no_uso"].startswith("Monto real 0")]
+    for i in pend:
+        mejores = [(_puntaje_vehiculo_par(i, j), j) for j in ceros
+                   if I.at[j, "codigo_marca"] in {L.at[i, "codigo_marca"], L.at[i, "codigo_marca_texto"]}
+                   and I.at[j, "medio_grupo"] == L.at[i, "medio_grupo"]]
+        if mejores:
+            sv, j = max(mejores)
+            if sv >= cfg.UMBRAL_SOLO_VEHICULO:
+                L.at[i, "nota_cruce"] = (f"En el Informe Real solo queda la fila bonificada en $0 "
+                                         f"({I.at[j, 'vehiculo'].strip()} {I.at[j, 'tipo'].strip()}, fila {int(I.at[j, 'fila_informe'])})")
 
     L.loc[L["estado_cruce"] == "", "estado_cruce"] = "Sin cruce"
     I.loc[~I["usada"] & (I["motivo_no_uso"] == ""), "motivo_no_uso"] = "Sin línea provisoria asociada"
